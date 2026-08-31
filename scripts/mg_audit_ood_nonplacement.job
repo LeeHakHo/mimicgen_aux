@@ -1,0 +1,21 @@
+#!/bin/bash
+#SBATCH --account=gaurav_1048
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
+#SBATCH --mem=16G
+#SBATCH --time=00:30:00
+#SBATCH --job-name=mg_audit_ood
+
+# Verify that each OOD env differs from its ID env only in object placement.
+set -u
+source /etc/profile.d/modules.sh; module purge; module load gcc/12.3.0
+source /scratch1/hyeonhoo/miniconda3/etc/profile.d/conda.sh; conda activate robot_mimic_mg
+export MUJOCO_GL=egl; export TMPDIR=/scratch1/hyeonhoo/tmp; mkdir -p "$TMPDIR"
+export PYTHONUNBUFFERED=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+cd /scratch1/hyeonhoo/code/Robomimic_Async
+echo "=== node: $(hostname) ==="
+python mg_audit_ood_nonplacement.py
+echo "=== AUDIT EXIT: $? ==="

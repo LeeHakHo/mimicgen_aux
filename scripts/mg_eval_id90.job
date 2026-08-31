@@ -1,0 +1,119 @@
+#!/bin/bash
+#SBATCH --account=gaurav_1048
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
+#SBATCH --constraint=a40|a100|l40s
+#SBATCH --mem=24G
+#SBATCH --time=06:00:00
+#SBATCH --job-name=mg_eval_id90
+#SBATCH --array=0-11
+
+# Unified fixed-scene evaluation for ONE task's four arms.
+#
+#   array index -> arm = idx / 3, seed = idx % 3     (12 = 4 arms x 3 rollout seeds)
+#   each element runs 4 rungs -- ID (60 scenes) + OOD_POS / OOD_YAW / OOD_BOTH (20 each) --
+#   and inside each rung scores ALL TEN checkpoints of that arm in a single process.
+#
+# Why the checkpoints are batched rather than given an array element each: eval_fixed_scenes
+# builds the env once and loops over --agents (nargs="+"), so an extra checkpoint costs only its
+# own rollouts. Measured on stack_d1 (job 11498007): ~2 min of startup -- module load, conda,
+# checkpoint load, MuJoCo env build -- against ~7 s per episode. One element per (arm, epoch)
+# paid that 2 min twelve times for 360 episodes, about 30% of the element spent on setup, and
+# 480 env builds per task. Batching an arm's 10 epochs into one call per rung costs 48 env
+# builds per task instead, and drops the queue slots per task from 40 to 12 -- which matters
+# because the gpu QOS caps a user at MaxSubmitJobsPU=100, the cap that silently rejected the
+# eval-scene submissions of the first pipeline driver.
+#
+# Total episodes per task is unchanged at 14,400 = 120 scenes x 3 seeds x 40 checkpoints; this
+# only repacks them into jobs. Per element: 120 x 10 = 1,200 episodes.
+#
+# GPU arch: the Ampere-and-newer pool, not a single model. This project has measured the same
+# checkpoint scoring 46 vs 36 across jobs on mixed architectures, so arch is a real nuisance
+# variable here. Two of the three causes behind that spread are already handled -- the three
+# seeds average the GMM sampling noise, and the seed is set explicitly per run rather than once
+# per job -- and the arch that remains is recorded into every result file (the "gpu" field
+# written below). Note the index maps to arm in blocks of THREE: if the scheduler fills one arch
+# before another an arm can still land systematically on one, so check that correlation before
+# reading any arm-vs-arm gap.
+#
+# Usage (time limit follows the task's horizon; 1,200 episodes at horizon 400 is ~2.5 h):
+#   sbatch --export=ALL,TASK=stack_d1   --time=06:00:00 mg_eval_id90.job
+#   sbatch --export=ALL,TASK=kitchen_d1 --time=12:00:00 mg_eval_id90.job
+set -u
+source /etc/profile.d/modules.sh; module purge; module load gcc/12.3.0
+source /scratch1/hyeonhoo/miniconda3/etc/profile.d/conda.sh; conda activate robot_mimic_mg
+export MUJOCO_GL=egl; export TMPDIR=/scratch1/hyeonhoo/tmp; mkdir -p "$TMPDIR"
+export PYTHONUNBUFFERED=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+cd /scratch1/hyeonhoo/code/Robomimic_Async
+
+T=${TASK:?set TASK=<task name>}
+EVAL_SEEDS=${EVAL_SEEDS:-3}
+EPOCH_STRIDE=${EPOCH_STRIDE:-50}      # of the 50 saved checkpoints, evaluate every Nth epoch
+N_CKPT=${N_CKPT:-10}
+ARMS=(baseline aux_world_frame aux_eef_frame aux_obj_eef_frame)
+
+A=${ARMS[$((SLURM_ARRAY_TASK_ID / EVAL_SEEDS))]}
+S=$((SLURM_ARRAY_TASK_ID % EVAL_SEEDS))
+
+NAME=${T}_${A}_id90_gmm_84
+RUN=/scratch1/hyeonhoo/results/id90_train/${T}/${NAME}
+SCN=/scratch1/hyeonhoo/results/id90_eval_scenes/${T}
+OUT=/scratch1/hyeonhoo/results/id90_eval/${T}
+mkdir -p "$OUT"
+
+# every checkpoint this arm contributes, newest training run, epoch 50..500.
+# The epoch is matched EXACTLY: a `model_epoch_${EP}*.pth` glob makes epoch 50 also match
+# model_epoch_500.pth, and `sort | tail -1` then picks 500 -- so epoch 50 was silently replaced
+# by a second copy of 500. Robomimic writes plain model_epoch_N.pth here; the `_*` arm covers the
+# suffixed form it uses when a checkpoint is tagged with its rollout score.
+MODELS=$(ls -d ${RUN}/*/models 2>/dev/null | sort | tail -1)
+[ -n "$MODELS" ] || { echo "FATAL: no models dir under $RUN" >&2; exit 1; }
+CKPTS=()
+for K in $(seq 1 "$N_CKPT"); do
+    EP=$((K * EPOCH_STRIDE))
+    C=$(ls -d ${MODELS}/model_epoch_${EP}.pth ${MODELS}/model_epoch_${EP}_*.pth 2>/dev/null | head -1)
+    if [ -n "$C" ]; then CKPTS+=("$C"); else echo "WARN: no checkpoint for $NAME epoch $EP" >&2; fi
+done
+[ ${#CKPTS[@]} -gt 0 ] || { echo "FATAL: no checkpoints at all under $RUN" >&2; exit 1; }
+
+HORIZON=$(python -c "import json;print(json.load(open('robomimic/exps/templates/id90/${T}_id90_gmm_84.json'))['experiment']['rollout']['horizon'])")
+echo "=== node: $(hostname) | $T | arm $A | seed $S | horizon $HORIZON | ${#CKPTS[@]} checkpoints ==="
+printf '    %s\n' "${CKPTS[@]}"
+nvidia-smi -L
+GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
+echo "=== gpu: $GPU_NAME ==="
+
+read -r ID_ENV POS_ENV YAW_ENV BOTH_ENV <<< "$(python - "$T" <<'PY'
+import sys
+from mimicgen.envs.robosuite.ood_ladder import TASK_LADDER
+print(" ".join(TASK_LADDER[sys.argv[1]]))
+PY
+)"
+
+rc_all=0
+for RUNG in id:$ID_ENV ood_pos:$POS_ENV ood_yaw:$YAW_ENV ood_both:$BOTH_ENV; do
+    tag=${RUNG%%:*}; env=${RUNG##*:}
+    scenes=$SCN/scenes_${tag}.hdf5
+    [ -f "$scenes" ] || { echo "SKIP $tag: scenes missing ($scenes)" >&2; rc_all=1; continue; }
+    out=$OUT/eval_${tag}_${A}_seed${S}.json
+    if [ -f "$out" ]; then echo "--- $tag: exists, skipping $out"; continue; fi
+    echo "--- $tag | env $env | seed $S | ${#CKPTS[@]} checkpoints in one env"
+    python -m robomimic.scripts.eval_fixed_scenes \
+        --scenes "$scenes" --env "$env" --agents "${CKPTS[@]}" \
+        --horizon "$HORIZON" --seed "$S" --output "$out"
+    rc=$?; [ $rc -ne 0 ] && { echo "!!! $tag seed $S EXIT $rc" >&2; rc_all=$rc; }
+    # stamp the machine this ran on into the result, so an arm/arch correlation is detectable
+    # afterwards instead of being invisible in the numbers
+    [ -f "$out" ] && python - "$out" "$GPU_NAME" "$(hostname)" <<'PY'
+import json, sys
+path, gpu, node = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.load(open(path))
+d["gpu"], d["node"] = gpu, node
+json.dump(d, open(path, "w"), indent=2)
+PY
+done
+echo "=== EVAL DONE: $T $A seed$S (exit $rc_all) ==="
+exit $rc_all

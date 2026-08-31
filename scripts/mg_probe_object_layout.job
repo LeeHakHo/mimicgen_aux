@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH --account=gaurav_1048
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
+#SBATCH --constraint=a100|a40|l40s|v100|p100
+#SBATCH --mem=16G
+#SBATCH --time=00:30:00
+#SBATCH --job-name=mg_obj_layout
+
+# Recover obs/object layout per task so the aux target slices can be set correctly.
+set -u
+source /etc/profile.d/modules.sh; module purge; module load gcc/12.3.0
+source /scratch1/hyeonhoo/miniconda3/etc/profile.d/conda.sh; conda activate robot_mimic_mg
+export MUJOCO_GL=egl; export TMPDIR=/scratch1/hyeonhoo/tmp; mkdir -p "$TMPDIR"
+export PYTHONUNBUFFERED=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+cd /scratch1/hyeonhoo/code/Robomimic_Async
+echo "=== node: $(hostname) ==="
+python mg_probe_object_layout.py
+echo "=== PROBE EXIT: $? ==="

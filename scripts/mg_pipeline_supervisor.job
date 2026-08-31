@@ -1,0 +1,19 @@
+#!/bin/bash
+#SBATCH --account=gaurav_1048
+#SBATCH --partition=main
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=2G
+#SBATCH --time=2-00:00:00
+#SBATCH --job-name=mg_supervisor
+#SBATCH --output=slurm-mg_supervisor-%j.out
+
+# CPU-only babysitter for the 12-task ID90 pipeline. It sleeps, polls the filesystem, and
+# submits the next stage of each task when that task is ready and the gpu QOS has room.
+#
+# It lives in a SLURM job rather than a login-node background shell on purpose: the previous
+# driver was the latter and died with its session, leaving mug_cleanup_d1 unsubmitted after its
+# datagen finished. `main` rather than `gpu` because it holds no GPU -- it only calls sbatch.
+set -u
+srun bash /scratch1/hyeonhoo/code/Robomimic_Async/mg_pipeline_supervisor.sh

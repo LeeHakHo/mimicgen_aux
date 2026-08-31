@@ -1,0 +1,55 @@
+#!/bin/bash
+#SBATCH --account=gaurav_1048
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
+#SBATCH --constraint=a100|a40|l40s|v100|p100
+#SBATCH --mem=24G
+#SBATCH --time=20:00:00
+#SBATCH --job-name=mg_gen_id90
+#SBATCH --array=0-11
+
+# MimicGen datagen for the 12-task ID90 study: 200 demos per task at 84x84 on the
+# <Base>_ID90 training envs (mimicgen/envs/robosuite/ood_ladder.py). Configs come from
+# mg_make_id90_configs.py. Source datasets carry datagen_info (mg_prepare_9tasks.job for the
+# 9 new ones; hammer/square/threading already had it).
+#
+# Smoke first, then full:
+#   sbatch --export=ALL,DEMOS=5,SUFFIX=_smoke --time=00:40:00 mg_gen_id90_12task.job
+#   sbatch mg_gen_id90_12task.job
+#
+# --time is generous (20h) because datagen success rate is per-task and unknown here: hammer ran
+# ~32% SR / 100 demos in 45 min, and the long-horizon tasks (kitchen, coffee_preparation,
+# three_piece_assembly) are expected to be several times slower. A job exits as soon as it hits
+# its demo count; there is no resume, so a timeout means regenerating from scratch.
+set -u
+source /etc/profile.d/modules.sh; module purge; module load gcc/12.3.0
+source /scratch1/hyeonhoo/miniconda3/etc/profile.d/conda.sh; conda activate robot_mimic_mg
+export MUJOCO_GL=egl; export TMPDIR=/scratch1/hyeonhoo/tmp; mkdir -p "$TMPDIR"
+export PYTHONUNBUFFERED=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+cd /scratch1/hyeonhoo/code/mimicgen
+
+TASKS=(stack_d1 stack_three_d1 square_d2 threading_d0 three_piece_assembly_d0 hammer_cleanup_d1 \
+       mug_cleanup_d1 coffee_d2 kitchen_d1 pick_place_d0 coffee_preparation_d1 nut_assembly_d0)
+T=${TASKS[$SLURM_ARRAY_TASK_ID]}
+DEMOS=${DEMOS:-200}
+SUFFIX=${SUFFIX:-}
+CFG=/scratch1/hyeonhoo/code/Robomimic_Async/mg_configs/${T}_id90.json
+OUT=/scratch1/hyeonhoo/results/mg_${T}_id90${SUFFIX}
+
+echo "=== node: $(hostname) | task $SLURM_ARRAY_TASK_ID -> $T | $DEMOS demos -> $OUT ==="
+nvidia-smi -L
+python -c "import json;c=json.load(open('$CFG'));print('  env:', c['experiment']['task']['name'], '| iface:', c['experiment']['task']['interface'], '| src:', c['experiment']['source']['dataset_path'])"
+
+python mimicgen/scripts/generate_dataset.py \
+    --config "$CFG" \
+    --num_demos "$DEMOS" \
+    --folder "$OUT" \
+    --auto-remove-exp
+rc=$?
+echo "=== DATAGEN EXIT: $rc ($T) ==="
+ls -lh "$OUT/${T}_id90/" 2>/dev/null
+cat "$OUT/${T}_id90/important_stats.json" 2>/dev/null
+exit $rc

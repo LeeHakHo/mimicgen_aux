@@ -1,0 +1,73 @@
+#!/bin/bash
+#SBATCH --account=gaurav_1048
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
+#SBATCH --constraint=p100
+#SBATCH --mem=16G
+#SBATCH --time=01:00:00
+#SBATCH --job-name=mg_scenes
+#SBATCH --array=0-11
+
+# Fixed evaluation scenes for the 12-task ID90 study: one array task per task, four scene sets each.
+#
+#   ID    60 scenes on <Base>_ID90       -- held out from training: same distribution, different
+#                                          draw (datagen used seed 1, these use seed 0)
+#   POS   20 scenes on <Base>_OOD_POS    -- x/y widened 1.67x, yaw held at the ID window
+#   YAW   20 scenes on <Base>_OOD_YAW    -- yaw widened to 180 deg, x/y held at ID
+#   BOTH  20 scenes on <Base>_OOD_BOTH   -- both
+#
+# 60 OOD scenes split evenly across the three single-factor rungs, matching the 60 ID scenes.
+# env_meta comes from the task's own training set (--dataset), so this runs as soon as datagen
+# finishes -- no trained checkpoint needed.
+set -u
+source /etc/profile.d/modules.sh; module purge; module load gcc/12.3.0
+source /scratch1/hyeonhoo/miniconda3/etc/profile.d/conda.sh; conda activate robot_mimic_mg
+export MUJOCO_GL=egl; export TMPDIR=/scratch1/hyeonhoo/tmp; mkdir -p "$TMPDIR"
+export PYTHONUNBUFFERED=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+cd /scratch1/hyeonhoo/code/Robomimic_Async
+
+TASKS=(stack_d1 stack_three_d1 square_d2 threading_d0 three_piece_assembly_d0 hammer_cleanup_d1 \
+       mug_cleanup_d1 coffee_d2 kitchen_d1 pick_place_d0 coffee_preparation_d1 nut_assembly_d0)
+T=${TASKS[$SLURM_ARRAY_TASK_ID]}
+N_ID=${N_ID:-60}
+N_OOD=${N_OOD:-20}
+SEED=${SEED:-0}
+
+DS=/scratch1/hyeonhoo/results/mg_${T}_id90/${T}_id90/demo.hdf5
+OUT=/scratch1/hyeonhoo/results/id90_eval_scenes/${T}
+mkdir -p "$OUT"
+[ -f "$DS" ] || { echo "FATAL: dataset missing: $DS (datagen not finished for $T)" >&2; exit 1; }
+
+# env names for this task's four rungs, straight from the ladder so they cannot drift
+read -r ID_ENV POS_ENV YAW_ENV BOTH_ENV <<< "$(python - "$T" <<'PY'
+import sys
+from mimicgen.envs.robosuite.ood_ladder import TASK_LADDER
+print(" ".join(TASK_LADDER[sys.argv[1]]))
+PY
+)"
+echo "=== node: $(hostname) | $T | ID=$ID_ENV POS=$POS_ENV YAW=$YAW_ENV BOTH=$BOTH_ENV ==="
+
+rc_all=0
+gen () {  # gen <env> <n> <tag>
+    local env=$1 n=$2 tag=$3
+    local out=$OUT/scenes_${tag}.hdf5
+    if [ -f "$out" ]; then echo "=== $tag: exists, reusing $out ==="; return 0; fi
+    echo "=== $tag: $n scenes on $env ==="
+    python -m robomimic.scripts.generate_eval_scenes \
+        --dataset "$DS" --env "$env" --n_scenes "$n" --seed "$SEED" --output "$out"
+    local rc=$?; echo "=== $tag EXIT: $rc ==="
+    [ $rc -ne 0 ] && rc_all=$rc
+    return 0
+}
+
+gen "$ID_ENV"   "$N_ID"  id
+gen "$POS_ENV"  "$N_OOD" ood_pos
+gen "$YAW_ENV"  "$N_OOD" ood_yaw
+gen "$BOTH_ENV" "$N_OOD" ood_both
+
+ls -la "$OUT"
+echo "=== SCENES DONE: $T (exit $rc_all) ==="
+exit $rc_all

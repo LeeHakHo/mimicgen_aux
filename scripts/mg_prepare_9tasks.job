@@ -1,0 +1,65 @@
+#!/bin/bash
+#SBATCH --account=gaurav_1048
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
+#SBATCH --mem=16G
+#SBATCH --time=00:40:00
+#SBATCH --job-name=mg_prep9
+#SBATCH --array=0-8
+
+# Attach MimicGen datagen metadata (datagen_info) IN PLACE to the 9 source datasets downloaded by
+# mg_download_source_datasets.sh. hammer_cleanup / square / threading already carry it and are not
+# in this array. Mirrors mg_hammer_prepare.job, one array task per source file.
+set -euo pipefail
+source /etc/profile.d/modules.sh; module purge; module load gcc/12.3.0
+source /scratch1/hyeonhoo/miniconda3/etc/profile.d/conda.sh; conda activate robot_mimic_mg
+export MUJOCO_GL=egl; export TMPDIR=/scratch1/hyeonhoo/tmp; mkdir -p "$TMPDIR"
+export PYTHONUNBUFFERED=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+cd /scratch1/hyeonhoo/code/mimicgen
+
+TASKS=(coffee coffee_preparation kitchen mug_cleanup nut_assembly pick_place stack stack_three three_piece_assembly)
+IFACES=(MG_Coffee MG_CoffeePreparation MG_Kitchen MG_MugCleanup MG_NutAssembly MG_PickPlace MG_Stack MG_StackThree MG_ThreePieceAssembly)
+T=${TASKS[$SLURM_ARRAY_TASK_ID]}
+IFACE=${IFACES[$SLURM_ARRAY_TASK_ID]}
+SRC=/scratch1/hyeonhoo/code/mimicgen/datasets/source/${T}.hdf5
+
+echo "=== node: $(hostname) | task $SLURM_ARRAY_TASK_ID -> $T | interface $IFACE ==="
+
+# NOTE: partition=gpu, not debug -- the debug QOS caps submitted jobs per user at 5 and this is an
+# array of 9.
+
+# datagen_info is written in place, so a re-run of an already-prepared file is wasted work, not a
+# correctness problem -- report it and skip.
+python - "$SRC" <<'PY'
+import sys, h5py
+with h5py.File(sys.argv[1], 'r') as f:
+    d = f["data"]; k = sorted(d.keys(), key=lambda s: int(s.split('_')[1]))[0]
+    print(f"  before: {len(d)} demos, datagen_info={'datagen_info' in d[k]}")
+PY
+
+python - "$IFACE" <<'PY'
+import sys, robosuite as suite, mimicgen
+from mimicgen.env_interfaces.base import REGISTERED_ENV_INTERFACES
+iface = sys.argv[1]
+assert iface in REGISTERED_ENV_INTERFACES["robosuite"], f"{iface} NOT registered!"
+print(f"  interface OK: {iface}")
+PY
+
+echo "=== prepare_src_dataset (in place) ==="
+python mimicgen/scripts/prepare_src_dataset.py \
+    --dataset "$SRC" \
+    --env_interface "$IFACE" \
+    --env_interface_type robosuite
+
+python - "$SRC" <<'PY'
+import sys, h5py
+with h5py.File(sys.argv[1], 'r') as f:
+    d = f["data"]; k = sorted(d.keys(), key=lambda s: int(s.split('_')[1]))[0]
+    ok = 'datagen_info' in d[k]
+    print(f"  after: datagen_info={ok}")
+    assert ok, "datagen_info still missing"
+PY
+echo "=== PREPARE DONE: $T ==="
