@@ -76,6 +76,16 @@ The failure modes here are silent, so each is checked rather than assumed:
   colour, texture, mesh, size, mass, friction, camera, lighting — so a rung differs
   in placement and in nothing else.
 
+## Reproducing
+
+- **`setup_env/ENVIRONMENT.md`** — the exact stack: four editable source checkouts with
+  their commits, the version pins (numpy must stay on 1.x — 2.x collapsed evaluation in
+  this line of work), the required env vars, and a robosuite texture patch that
+  `pick_place_d0`'s observations depend on.
+- **Data** — https://huggingface.co/datasets/LeeHakHo/mimicgen_aux_data carries the
+  generated demonstrations and the fixed evaluation scenes, so training and evaluation
+  can be reproduced without re-running datagen.
+
 ## Dependency
 
 The policy-side code (the aux heads, the multi-object target blocks, the point-cloud
