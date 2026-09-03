@@ -54,6 +54,17 @@ from mimicgen.envs.robosuite.pick_place import PickPlace_D0
 EPS = 1e-6
 ID_ROT_HALF_WIDTH = np.pi / 4.0   # -> 90 deg training window
 OOD_ROT_HALF_WIDTH = np.pi / 2.0  # -> 180 deg evaluation window
+#   Both are divided by the primary object's `yaw_fold` (its N-fold symmetry about z). An object
+#   with N-fold symmetry has an orientation ORBIT of 360/N degrees, not 360: yaw and yaw+360/N are
+#   the same physical scene. A window as wide as the orbit therefore covers every distinguishable
+#   orientation, and widening it is a no-op -- which is exactly what happened to the two stack
+#   tasks, whose cubes are exact cubes (C4, a 90 degree orbit) against a 90 degree ID window: all
+#   four arms scored ood_yaw >= id there while ood_pos dropped hard, because the yaw rung was not
+#   a distribution shift at all. Dividing by the fold keeps the rung at the SAME FRACTION of the
+#   orbit for every task -- ID a quarter of it, OOD a half -- so a cube gets 22.5 / 45 deg where an
+#   asymmetric object gets 90 / 180, and the tasks stay comparable. The aux head's rotation target
+#   should carry the matching `rotation_fold` (robomimic dataset.py `_quat_to_yaw_sincos`), or its
+#   label is not a function of the image.
 OOD_SCALE = 1.67                  # x/y half-width multiplier, center held fixed
 #   Matches the Hammer study that produced this project's only above-noise gap (baseline 0.57 vs
 #   aux_obj_eef 0.77 on HammerCleanup_OOD_Spawn20_Yaw90): its training box was 1.2x the D0
@@ -228,6 +239,7 @@ class IDRestrictMixin:
     """
 
     id_rot_half_width = ID_ROT_HALF_WIDTH
+    yaw_fold = 1
 
     def _get_initial_placement_bounds(self):
         base = super()._get_initial_placement_bounds()
@@ -237,17 +249,19 @@ class IDRestrictMixin:
             if "z_rot" in spec:
                 lo, hi = spec["z_rot"]
                 new_spec["z_rot"] = fixed_width_range(
-                    lo, hi, self.id_rot_half_width, never_widen=True)
+                    lo, hi, self.id_rot_half_width / self.yaw_fold, never_widen=True)
             out[obj_name] = new_spec
         return out
 
 
 class Stack_D1_ID90(IDRestrictMixin, Stack_D1):
-    pass
+    # cubeA/cubeB are exact cubes (BoxObject size_min == size_max), so C4 about z: see yaw_fold
+    yaw_fold = 4
 
 
 class StackThree_D1_ID90(IDRestrictMixin, StackThree_D1):
-    pass
+    # cubeA, cubeB and cubeC are all exact cubes
+    yaw_fold = 4
 
 
 class Square_D2_ID90(SquarePegPerResetMixin, SquarePegFixedMixin, IDRestrictMixin, Square_D2):
@@ -326,6 +340,7 @@ class TargetObjectsMixin:
     """
 
     target_objects = ()
+    yaw_fold = 1
 
     def _check_target_names(self, base):
         unknown = [n for n in self.target_objects if n not in base]
@@ -341,7 +356,7 @@ class TargetObjectsMixin:
         if "z_rot" in spec:
             lo, hi = spec["z_rot"]
             new_spec["z_rot"] = fixed_width_range(
-                lo, hi, ID_ROT_HALF_WIDTH, never_widen=True)
+                lo, hi, ID_ROT_HALF_WIDTH / self.yaw_fold, never_widen=True)
         return new_spec
 
 
@@ -387,7 +402,7 @@ class OODPlacementMixin(TargetObjectsMixin):
                         new_spec[key] = (lo, hi)
             if self.widen_yaw and "z_rot" in spec:
                 lo, hi = spec["z_rot"]
-                new_spec["z_rot"] = fixed_width_range(lo, hi, OOD_ROT_HALF_WIDTH)
+                new_spec["z_rot"] = fixed_width_range(lo, hi, OOD_ROT_HALF_WIDTH / self.yaw_fold)
             out[obj_name] = new_spec
         return out
 
@@ -480,11 +495,13 @@ class PerCubeSamplerMixin:
 class Stack_D1_OOD_BOTH(PerCubeSamplerMixin, OODPlacementMixin, Stack_D1):
     # cubeA is carried onto cubeB, so cubeB is the target and keeps its ID window.
     target_objects = ("cubeB",)
+    yaw_fold = 4  # C4 cubes -- must match Stack_D1_ID90 or the rungs stop being concentric
 
 
 class StackThree_D1_OOD_BOTH(PerCubeSamplerMixin, OODPlacementMixin, StackThree_D1):
     # cubeA goes onto cubeB and cubeC onto cubeA: cubeB is the base, cubeA and cubeC are carried.
     target_objects = ("cubeB",)
+    yaw_fold = 4
 
 
 class Square_D2_OOD_BOTH(SquarePegPerResetMixin, SquarePegFixedMixin, OODPlacementMixin, Square_D2):

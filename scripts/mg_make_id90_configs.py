@@ -16,10 +16,14 @@ import argparse
 import json
 import os
 
-TEMPLATE_DIR = "/scratch1/hyeonhoo/code/mimicgen/mimicgen/exps/templates/robosuite"
-SOURCE_DIR = "/scratch1/hyeonhoo/code/mimicgen/datasets/source"
-OUT_DIR = "/scratch1/hyeonhoo/code/Robomimic_Async/mg_configs"
-RESULTS = "/scratch1/hyeonhoo/results"
+# CARC defaults; the Anvil side of the study overrides all four through the environment rather
+# than editing them, so the two clusters share one script (same pattern as MG_RESULTS in
+# mg_make_train_configs.py).
+TEMPLATE_DIR = os.environ.get(
+    "MG_TEMPLATE_DIR", "/scratch1/hyeonhoo/code/mimicgen/mimicgen/exps/templates/robosuite")
+SOURCE_DIR = os.environ.get("MG_SOURCE_DIR", "/scratch1/hyeonhoo/code/mimicgen/datasets/source")
+OUT_DIR = os.environ.get("MG_CONFIG_DIR", "/scratch1/hyeonhoo/code/Robomimic_Async/mg_configs")
+RESULTS = os.environ.get("MG_RESULTS", "/scratch1/hyeonhoo/results")
 
 # task key -> (template/source basename, MimicGen env interface, ID90 env name)
 TASKS = {

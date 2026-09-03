@@ -65,6 +65,19 @@ OBJ_BLOCKS = {
     "nut_assembly_d0":         (0, 14),        # SquareNut, RoundNut
 }
 
+# N-fold symmetry of the manipulated object about z, for the aux head's rotation target. The
+# target is (sin(N*yaw), cos(N*yaw)) -- see robomimic/utils/dataset.py `_quat_to_yaw_sincos` -- so
+# with N=1 on a symmetric object the same image carries several different labels 360/N degrees
+# apart and the regression has nothing to fit. Only the two stack tasks are affected: their cubes
+# are exact cubes (C4). The nuts and the round nut's ring look symmetric but each carries a handle
+# geom that breaks it, the coffee pod's yaw is fixed (a body of revolution), and everything else is
+# plainly asymmetric. Keep in step with `yaw_fold` in mimicgen ood_ladder.py, which narrows the
+# ID/OOD placement windows by the same factor.
+ROTATION_FOLD = {
+    "stack_d1":       4,
+    "stack_three_d1": 4,
+}
+
 # Canonical geometry per manipulated object, positionally aligned with OBJ_BLOCKS, for the
 # point-cloud family (pc / voxel / tsdf / embed). All 12 tasks are covered.
 #   pick_place_d0          mesh objects, sampled from the assets robosuite loads
@@ -155,6 +168,7 @@ def main():
                               horizon=horizon, warmstart=0)
         _aux = cfg.setdefault("algo", {}).setdefault("aux_pose", {})
         _aux["obj_blocks"] = list(OBJ_BLOCKS[task])
+        _aux["rotation_fold"] = ROTATION_FOLD.get(task, 1)
         if task in PC_OBJECTS:
             _aux["pc_object"] = ",".join(PC_OBJECTS[task])
         train["num_epochs"] = args.epochs
@@ -173,6 +187,7 @@ def main():
             json.dump(cfg, f, indent=4)
         src = "FULL" if "_smoke" not in sp else "smoke"
         print(f"{task:24s} horizon {horizon:5d}  obj_blocks {str(OBJ_BLOCKS[task]):16s}"
+              f" fold {_aux['rotation_fold']}"
               f" (mean ep {stats['ep_length_mean']:6.1f}, {src})")
 
     if missing:

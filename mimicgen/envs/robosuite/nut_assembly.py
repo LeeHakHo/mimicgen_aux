@@ -24,7 +24,43 @@ class NutAssembly_D0(NutAssembly, SingleArmEnv_MG):
     Augment robosuite nut assembly task for mimicgen.
     """
     def __init__(self, **kwargs):
-        NutAssembly.__init__(self, **kwargs)
+        assert "placement_initializer" not in kwargs, "this class defines its own placement initializer"
+
+        # Build the sampler from _get_initial_placement_bounds() rather than letting
+        # NutAssembly._load_model() fall back to its own hardcoded one. Without this the bounds
+        # dict below is never read by anything that places an object, so a subclass that rewrites
+        # it -- the ID90 / OOD placement ladder in ood_ladder.py -- has no effect whatsoever: the
+        # nuts keep robosuite's `rotation=None` (a full circle) and its default x/y, and the ID,
+        # OOD_POS, OOD_YAW and OOD_BOTH envs all sample identically. Square_D0 below already
+        # builds its sampler this way; this brings the two-nut task in line with it.
+        #
+        # On NutAssembly_D0 itself the two are equivalent, so the base task's distribution does
+        # not move: the bounds x/y are the same values robosuite hardcodes, z_rot=(0, 2*pi) is
+        # what `rotation=None` samples, `reference` is this task's table_offset, and the sampler
+        # draws x, y and the rotation in the same order, so a seeded sequence is unchanged too.
+        nut_names = ("SquareNut", "RoundNut")
+        bounds = self._get_initial_placement_bounds()
+
+        placement_initializer = SequentialCompositeSampler(name="ObjectSampler")
+        for nut_name, bound_name in zip(nut_names, ("square_nut", "round_nut")):
+            b = bounds[bound_name]
+            placement_initializer.append_sampler(
+                # _load_model() hands each nut to the sampler named after it, so these names are
+                # part of the interface, not decoration
+                sampler=UniformRandomSampler(
+                    name=f"{nut_name}Sampler",
+                    x_range=b["x"],
+                    y_range=b["y"],
+                    rotation=b["z_rot"],
+                    rotation_axis="z",
+                    ensure_object_boundary_in_range=False,
+                    ensure_valid_placement=True,
+                    reference_pos=b["reference"],
+                    z_offset=0.02,
+                )
+            )
+
+        NutAssembly.__init__(self, placement_initializer=placement_initializer, **kwargs)
 
     def edit_model_xml(self, xml_str):
         # make sure we don't get a conflict for function implementation
