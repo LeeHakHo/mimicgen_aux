@@ -16,12 +16,16 @@ Exit code 0 = pass, 1 = fail.
 """
 import argparse
 import json
+import os
 import sys
 
 import h5py
 import numpy as np
 
-sys.path.insert(0, "/scratch1/hyeonhoo/code/Robomimic_Async")
+# script-relative, not the hardcoded CARC checkout path: this file is a copy of what runs in the
+# Robomimic_Async checkout (see README_id90.md's Dependency section), but mg_make_train_configs.py
+# always lives next to it, so resolve that directory instead of assuming /scratch1/hyeonhoo/...
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mg_make_train_configs import OBJ_BLOCKS, RESULTS  # noqa: E402
 
 

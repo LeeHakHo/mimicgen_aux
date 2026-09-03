@@ -48,12 +48,12 @@ submit () {
 }
 
 acct ()   { echo "${ACCTS[$(( $1 % ${#ACCTS[@]} ))]}"; }
-horizon () { $PY -c "import json;print(json.load(open('robomimic/exps/templates/id90/${1}_id90_gmm_84.json'))['experiment']['rollout']['horizon'])" 2>/dev/null || echo 400; }
+horizon () { $PY -c "import json;print(json.load(open('robomimic/exps/templates/id90/${1}_id90_diffusion_84.json'))['experiment']['rollout']['horizon'])" 2>/dev/null || echo 400; }
 
 trained () {    # all four arms of a task carry an epoch-500 checkpoint
     local t=$1 a
     for a in "${ARMS[@]}"; do
-        ls "$RES/id90_train/$t/${t}_${a}_id90_gmm_84"/*/models/model_epoch_500*.pth >/dev/null 2>&1 || return 1
+        ls "$RES/id90_train/$t/${t}_${a}_id90_diffusion_84"/*/models/model_epoch_500*.pth >/dev/null 2>&1 || return 1
     done
 }
 

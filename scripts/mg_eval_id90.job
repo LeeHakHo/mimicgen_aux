@@ -58,10 +58,14 @@ ARMS=(baseline aux_world_frame aux_eef_frame aux_obj_eef_frame)
 A=${ARMS[$((SLURM_ARRAY_TASK_ID / EVAL_SEEDS))]}
 S=$((SLURM_ARRAY_TASK_ID % EVAL_SEEDS))
 
-NAME=${T}_${A}_id90_gmm_84
+NAME=${T}_${A}_id90_diffusion_84
 RUN=/scratch1/hyeonhoo/results/id90_train/${T}/${NAME}
 SCN=/scratch1/hyeonhoo/results/id90_eval_scenes/${T}
-OUT=/scratch1/hyeonhoo/results/id90_eval/${T}
+# id90_eval_diffusion, not id90_eval: the old GMM study's eval jsons already live at id90_eval/${T}
+# with filenames that carry no algo tag (eval_${tag}_${A}_seed${S}.json) -- reusing that directory
+# for the diffusion arms would silently overwrite them, since $A (arm name) is identical across
+# both studies. Keeping them in separate directories is what preserves the GMM results as history.
+OUT=/scratch1/hyeonhoo/results/id90_eval_diffusion/${T}
 mkdir -p "$OUT"
 
 # every checkpoint this arm contributes, newest training run, epoch 50..500.
@@ -79,7 +83,7 @@ for K in $(seq 1 "$N_CKPT"); do
 done
 [ ${#CKPTS[@]} -gt 0 ] || { echo "FATAL: no checkpoints at all under $RUN" >&2; exit 1; }
 
-HORIZON=$(python -c "import json;print(json.load(open('robomimic/exps/templates/id90/${T}_id90_gmm_84.json'))['experiment']['rollout']['horizon'])")
+HORIZON=$(python -c "import json;print(json.load(open('robomimic/exps/templates/id90/${T}_id90_diffusion_84.json'))['experiment']['rollout']['horizon'])")
 echo "=== node: $(hostname) | $T | arm $A | seed $S | horizon $HORIZON | ${#CKPTS[@]} checkpoints ==="
 printf '    %s\n' "${CKPTS[@]}"
 nvidia-smi -L

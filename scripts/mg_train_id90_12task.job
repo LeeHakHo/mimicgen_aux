@@ -46,8 +46,8 @@ T=${TASKS[$((SLURM_ARRAY_TASK_ID / 4))]}
 A=${ARMS[$((SLURM_ARRAY_TASK_ID % 4))]}
 # CFG_OVERRIDE lets a smoke run point at a modified config (e.g. rollout.rate lowered so a
 # 20-epoch run actually exercises the rollout path) without touching the real ones.
-CFG=${CFG_OVERRIDE:-robomimic/exps/templates/id90/${T}_id90_gmm_84.json}
-NAME=${T}_${A}_id90_gmm_84
+CFG=${CFG_OVERRIDE:-robomimic/exps/templates/id90/${T}_id90_diffusion_84.json}
+NAME=${T}_${A}_id90_diffusion_84
 EPOCHS=${EPOCHS:-}          # e.g. EPOCHS=20 for a timing smoke
 
 L3="--aux_head_layers 3"

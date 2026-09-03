@@ -18,17 +18,28 @@ only what the new study changes:
   crop              202 -> 76   (84px images; 224px used 202)
   rollout.horizon   500 -> per task, from the generated data's own episode lengths
 
-Usage: python mg_make_train_configs.py            # after datagen, reads each task's real stats
-       python mg_make_train_configs.py --smoke_ok # allow falling back to the 5-demo smoke stats
+Base policy head is Diffusion Policy (DDIM, 10 inference steps -- see setup_env/ENVIRONMENT.md /
+README_id90.md) by default, not the original BC-Transformer-GMM; the aux_pose machinery (the
+baseline/world/eef/obj_eef arms) is unaffected, since dataset.py/train_utils.py build the aux
+target the same way regardless of algo. Pass --algo gmm to still emit the original GMM configs
+(e.g. for a side-by-side comparison) -- the point-cloud aux family (pc/voxel/embed) stays GMM-only
+either way, since it is not implemented for Diffusion Policy (see algo/diffusion_policy.py).
+
+Usage: python mg_make_train_configs.py             # after datagen, reads each task's real stats
+       python mg_make_train_configs.py --smoke_ok  # allow falling back to the 5-demo smoke stats
+       python mg_make_train_configs.py --algo gmm  # emit the original BC-Transformer-GMM configs
 """
 import argparse
 import json
 import math
 import os
 
-TEMPLATE = "robomimic/exps/templates/bc_transformer_hammer_yaw45_spawn12_gmm_224.json"
+TEMPLATES = {
+    "diffusion": "robomimic/exps/templates/diffusion_policy_id90_84.json",
+    "gmm": "robomimic/exps/templates/bc_transformer_hammer_yaw45_spawn12_gmm_224.json",
+}
 OUT_DIR = "robomimic/exps/templates/id90"
-RESULTS = "/scratch1/hyeonhoo/results"
+RESULTS = os.environ.get("MG_RESULTS", "/scratch1/hyeonhoo/results")
 
 # Start offsets, within obs/object, of the objects the policy MANIPULATES -- recovered per task
 # by mg_probe_object_layout.py (each observable matched against object-state by value, pos+quat as
@@ -113,7 +124,13 @@ def main():
                     help="log to wandb (expects credentials in ~/.netrc, not in the job file)")
     ap.add_argument("--smoke_ok", action="store_true",
                     help="fall back to the 5-demo smoke stats when a task has no full datagen yet")
+    ap.add_argument("--algo", choices=sorted(TEMPLATES.keys()), default="diffusion",
+                    help="base policy head: diffusion (study default) or gmm (the original "
+                         "BC-Transformer-GMM base, kept for comparison)")
     args = ap.parse_args()
+
+    template = TEMPLATES[args.algo]
+    suffix = args.algo if args.algo != "gmm" else "gmm"
 
     os.makedirs(OUT_DIR, exist_ok=True)
     suffixes = ["", "_smoke2", "_smoke"] if args.smoke_ok else [""]
@@ -127,7 +144,7 @@ def main():
         horizon = horizon_for(stats["ep_length_mean"])
         dataset = f"{RESULTS}/mg_{task}_id90/{task}_id90/demo.hdf5"
 
-        cfg = json.load(open(TEMPLATE))
+        cfg = json.load(open(template))
         exp, train = cfg["experiment"], cfg["train"]
         exp["name"] = f"{task}_id90"
         exp["env"] = None          # rollout env comes from the dataset's own env_meta
@@ -151,7 +168,7 @@ def main():
         exp["logging"]["log_wandb"] = args.wandb
         exp["logging"]["log_tb"] = True
 
-        out = os.path.join(OUT_DIR, f"{task}_id90_gmm_84.json")
+        out = os.path.join(OUT_DIR, f"{task}_id90_{suffix}_84.json")
         with open(out, "w") as f:
             json.dump(cfg, f, indent=4)
         src = "FULL" if "_smoke" not in sp else "smoke"

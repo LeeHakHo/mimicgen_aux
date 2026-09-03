@@ -102,7 +102,18 @@ them at your own paths before running.
 
 ## Settings that matter
 
-- Training: 500 epochs, checkpoint every 10, crop 76, GMM head. Rollouts during
+- Base policy head: **Diffusion Policy** (UNet, DDIM, 10 inference steps -- trained at
+  `num_train_timesteps=100` like DDPM, sampled with DDIM so eval stays cheap across the
+  4 rungs x 3 seeds x 10 checkpoints x 4 arms x 12 tasks matrix), not the original
+  BC-Transformer-GMM. The `aux_pose` machinery that defines the four arms (baseline /
+  aux_world_frame / aux_eef_frame / aux_obj_eef_frame) is unchanged and unaffected by this
+  swap: `dataset.py`/`train_utils.py` build the aux target the same way regardless of
+  algo, so only `robomimic/algo/diffusion_policy.py` + `robomimic/config/diffusion_policy_config.py`
+  gained a (duplicated, not shared with `bc.py`, to keep the validated GMM path unchanged)
+  aux head implementation -- **for the three target_source values these arms use only**
+  (`obs`/`eef_frame`/`obj_eef_frame`); the point-cloud aux family (pc/voxel/embed) stays
+  BC-only. `mg_make_train_configs.py --algo gmm` still emits the original GMM configs.
+- Training: 500 epochs, checkpoint every 10, crop 76. Rollouts during
   training are a liveness check only (`n=1`); all reported numbers come from the
   fixed-scene evaluation.
 - Evaluation: fixed scenes, ID 60 + 20 per OOD rung, 3 rollout seeds, epochs 50…500.
