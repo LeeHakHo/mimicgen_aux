@@ -1,10 +1,13 @@
-"""Emit one robomimic training config per task for the 12-task ID90 study (84px, 500 epochs).
+"""Emit one robomimic training config per task for the 12-task ID90 study (84px, 1000 epochs).
 
 Derived from the Hammer yaw45_spawn12 config that produced this project's reference result, with
 only what the new study changes:
 
-  epochs            1000 -> 500
-  save.every_n_epochs 50 -> 10   (50 checkpoints; the eval grid uses a subset and can fill in)
+  epochs            1000, reached in one job. The first pass through this study wrote 500 here and
+                    resumed to 1000 afterwards; every run that produced a result went to 1000, so
+                    the default matches that rather than the intermediate step. Regenerating with
+                    500 silently disagreed with the checkpoints already on disk.
+  save.every_n_epochs 50 -> 10   (100 checkpoints; the eval grid uses every 100th and can fill in)
   save.on_best_rollout_success_rate  true -> FALSE
         Left on, checkpoints would be written on rollout success too, so the saved set would no
         longer be the even 10-epoch grid the evaluation assumes.
@@ -78,6 +81,26 @@ ROTATION_FOLD = {
     "stack_three_d1": 4,
 }
 
+# Which of a task's OBJ_BLOCKS keep the rotation half of the aux target; absent = all of them.
+# A rotationally symmetric object has no yaw to predict -- the same image carries many yaw values
+# -- so its (sin,cos) target is noise, and the gradient from it lands in the shared visual encoder.
+# Both entries here are the coffee pod, a body of revolution whose z_rot upstream pins at 0 and
+# whose extracted yaw then swings a full circle once the gripper tilts it (a z-Euler angle is
+# ill-conditioned away from upright): measured over the 200 demos, the pod's initial yaw is
+# identical in every one (spread 0.00 deg) while its within-episode spread is 106 deg median on
+# coffee_d2 and a full 360 on coffee_preparation_d1.
+#   coffee_d2              blocks (0,) = pod only -> keep nothing. Equivalent to
+#                          include_rotation=False, but it also applies to the eef/obj_eef arms,
+#                          whose train.py branches force include_rotation=True.
+#   coffee_preparation_d1  blocks (0, 70) = pod, mug -> keep the mug. The mug carries the task's
+#                          real rotation axis (native full circle, ID-restricted to 90 deg, and
+#                          it is the object the OOD yaw rung widens), and its handle breaks the
+#                          symmetry, so its yaw IS a function of the image.
+ROTATION_BLOCKS = {
+    "coffee_d2":             [],
+    "coffee_preparation_d1": [70],
+}
+
 # Canonical geometry per manipulated object, positionally aligned with OBJ_BLOCKS, for the
 # point-cloud family (pc / voxel / tsdf / embed). All 12 tasks are covered.
 #   pick_place_d0          mesh objects, sampled from the assets robosuite loads
@@ -128,7 +151,7 @@ def horizon_for(mean_len):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--epochs", type=int, default=500)
+    ap.add_argument("--epochs", type=int, default=1000)
     ap.add_argument("--save_every", type=int, default=10)
     ap.add_argument("--rollout_n", type=int, default=1)
     ap.add_argument("--rollout_rate", type=int, default=100)
@@ -169,6 +192,9 @@ def main():
         _aux = cfg.setdefault("algo", {}).setdefault("aux_pose", {})
         _aux["obj_blocks"] = list(OBJ_BLOCKS[task])
         _aux["rotation_fold"] = ROTATION_FOLD.get(task, 1)
+        if task in ROTATION_BLOCKS:
+            _aux["rotation_blocks"] = list(ROTATION_BLOCKS[task])
+            assert set(_aux["rotation_blocks"]) <= set(OBJ_BLOCKS[task]), task
         if task in PC_OBJECTS:
             _aux["pc_object"] = ",".join(PC_OBJECTS[task])
         train["num_epochs"] = args.epochs
@@ -188,6 +214,7 @@ def main():
         src = "FULL" if "_smoke" not in sp else "smoke"
         print(f"{task:24s} horizon {horizon:5d}  obj_blocks {str(OBJ_BLOCKS[task]):16s}"
               f" fold {_aux['rotation_fold']}"
+              f" rot_blocks {_aux.get('rotation_blocks', 'all')}"
               f" (mean ep {stats['ep_length_mean']:6.1f}, {src})")
 
     if missing:
