@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH --account=gaurav_1048
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --time=00:30:00
+#SBATCH --job-name=mg_verify_sampler
+
+# Confirms the ID90/OOD windows reach the sampler that actually places objects, for the three
+# tasks 2ff6e33 fixed. A GPU it never renders with: importing mujoco selects a GL backend at
+# import time regardless of `has_renderer=False`, and osmesa is not built in this env.
+set -u
+source /etc/profile.d/modules.sh; module purge; module load gcc/12.3.0
+source /scratch1/hyeonhoo/miniconda3/etc/profile.d/conda.sh; conda activate robot_mimic_mg
+export MUJOCO_GL=egl; export TMPDIR=/scratch1/hyeonhoo/tmp; mkdir -p "$TMPDIR"
+export PYTHONUNBUFFERED=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+cd /scratch1/hyeonhoo/code/Robomimic_Async
+echo "=== node: $(hostname) ==="
+python mg_verify_sampler_ranges.py stack_d1 stack_three_d1 nut_assembly_d0 hammer_cleanup_d1
+rc=$?
+echo "=== VERIFY EXIT: $rc ==="
+# propagate it: `echo` as the last command made the job COMPLETED on a failed check, which is
+# how a dependent datagen started against a verification that had actually failed
+exit $rc

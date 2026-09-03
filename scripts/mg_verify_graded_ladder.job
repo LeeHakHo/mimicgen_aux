@@ -1,0 +1,26 @@
+#!/bin/bash
+#SBATCH --account=gaurav_1048
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --time=01:00:00
+#SBATCH --job-name=mg_verify_graded
+
+# The graded ladder (5 position levels x 1.2..2.0, 5 disjoint rotation bands) for all 12 tasks,
+# checked against the ID env rather than a declared number, before any eval scene is generated.
+# A GPU it never renders with: importing mujoco selects a GL backend at import time regardless of
+# has_renderer=False, and osmesa is not built in this env.
+set -u
+source /etc/profile.d/modules.sh; module purge; module load gcc/12.3.0
+source /scratch1/hyeonhoo/miniconda3/etc/profile.d/conda.sh; conda activate robot_mimic_mg
+export MUJOCO_GL=egl; export TMPDIR=/scratch1/hyeonhoo/tmp; mkdir -p "$TMPDIR"
+export PYTHONUNBUFFERED=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+cd /scratch1/hyeonhoo/code/Robomimic_Async
+echo "=== node: $(hostname) ==="
+python mg_verify_sampler_ranges.py --mode graded
+rc=$?
+echo "=== VERIFY EXIT: $rc ==="
+exit $rc

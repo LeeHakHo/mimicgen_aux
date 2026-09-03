@@ -45,7 +45,8 @@ from mimicgen.envs.robosuite.nut_assembly import Square_D2, NutAssembly_D0
 from mimicgen.envs.robosuite.threading import Threading_D0
 from mimicgen.envs.robosuite.three_piece_assembly import ThreePieceAssembly_D0
 from mimicgen.envs.robosuite.hammer_cleanup import (
-    HammerCleanup_D1, HammerCleanup_Yaw45_Spawn12)
+    HammerCleanup_D1, HammerCleanup_Yaw45_Spawn12,
+    HammerCleanup_FixedHead_Yaw45_Spawn25)
 from mimicgen.envs.robosuite.mug_cleanup import MugCleanup_D1
 from mimicgen.envs.robosuite.coffee import Coffee_D2, CoffeePreparation_D1
 from mimicgen.envs.robosuite.kitchen import Kitchen_D1
@@ -525,6 +526,16 @@ class HammerCleanup_D1_OOD_BOTH(OODPlacementMixin, HammerCleanup_D1):
     target_objects = ("drawer",)
 
 
+class HammerCleanup_FixedHead_Yaw45_Spawn25_OOD_BOTH(
+        OODPlacementMixin, HammerCleanup_FixedHead_Yaw45_Spawn25):
+    """The study's hammer rung, rooted on the fixed-head training distribution.
+
+    Same construction as the Yaw45_Spawn12 rung below, which it replaces: that env's declared yaw
+    window was really two lobes 180 degrees apart, so a band walked outward from it was walking
+    away from one lobe and toward the other.
+    """
+
+
 class HammerCleanup_Yaw45_Spawn12_OOD_BOTH(OODPlacementMixin, HammerCleanup_Yaw45_Spawn12):
     """OOD rung for the Hammer training distribution this project actually uses.
 
@@ -628,7 +639,8 @@ def _make_axis_variants(both_cls):
 
 _BOTH_CLASSES = [
     Stack_D1_OOD_BOTH, StackThree_D1_OOD_BOTH, Square_D2_OOD_BOTH, Threading_D0_OOD_BOTH,
-    ThreePieceAssembly_D0_OOD_BOTH, HammerCleanup_Yaw45_Spawn12_OOD_BOTH, MugCleanup_D1_OOD_BOTH,
+    ThreePieceAssembly_D0_OOD_BOTH, HammerCleanup_FixedHead_Yaw45_Spawn25_OOD_BOTH,
+    MugCleanup_D1_OOD_BOTH,
     Coffee_D2_OOD_BOTH, Kitchen_D1_OOD_BOTH, CoffeePreparation_D1_OOD_BOTH,
     NutAssembly_D0_OOD_BOTH, PickPlace_D0_OOD_BOTH,
 ]
@@ -639,7 +651,7 @@ for _both in _BOTH_CLASSES:
 
 # task -> training env + the three evaluation rungs
 TASK_LADDER = {
-    task: (stem if stem.endswith("Spawn12") else f"{stem}_ID90",
+    task: (stem if stem.startswith("HammerCleanup") else f"{stem}_ID90",
            f"{stem}_OOD_POS", f"{stem}_OOD_YAW", f"{stem}_OOD_BOTH")
     for task, stem in [
         ("stack_d1", "Stack_D1"),
@@ -648,8 +660,8 @@ TASK_LADDER = {
         ("threading_d0", "Threading_D0"),
         ("three_piece_assembly_d0", "ThreePieceAssembly_D0"),
         # NOTE: hammer's ID env is the training distribution itself, not a `_ID90` alias --
-        # HammerCleanup_Yaw45_Spawn12 already carries the 90 degree yaw window.
-        ("hammer_cleanup_d1", "HammerCleanup_Yaw45_Spawn12"),
+        # HammerCleanup_FixedHead_Yaw45_Spawn25 already carries its own ID window.
+        ("hammer_cleanup_d1", "HammerCleanup_FixedHead_Yaw45_Spawn25"),
         ("mug_cleanup_d1", "MugCleanup_D1"),
         ("coffee_d2", "Coffee_D2"),
         ("kitchen_d1", "Kitchen_D1"),
@@ -661,3 +673,153 @@ TASK_LADDER = {
 
 # eval scenes are split evenly across the three rungs (20 + 20 + 20 = 60 per task)
 EVAL_SCENES_PER_RUNG = 20
+
+
+# --- graded severity ladder -------------------------------------------------------------------
+#
+# The three rungs above answer "does it break OOD". They do not answer "how far out does it break",
+# because each is a single point on its axis. These variants replace each point with five, so a
+# task's degradation can be read as a CURVE against distance from the training distribution rather
+# than one number.
+#
+#   _OOD_POS_L1 .. _L5   x/y half-width x 1.2, 1.4, 1.6, 1.8, 2.0 about the ID center;
+#                        yaw held at the ID window throughout.
+#   _OOD_YAW_L1 .. _L5   x/y held at the ID ranges; yaw drawn from the k-th of five DISJOINT bands
+#                        walking outward from the edge of the ID window to the far side of the
+#                        object's orientation orbit.
+#
+# The two ladders differ in kind, deliberately. The position levels are NESTED (a 2.0x box contains
+# the 1.2x one), which is what a scale factor means and what the existing 1.67x rung already does.
+# The rotation levels are DISJOINT: a widened yaw window keeps re-drawing the ID orientations it
+# contains, so severity would grow only as fast as the new fraction, and L5 would still be mostly
+# ID. Bands remove that -- every episode at level k is at least `k-1` steps away from anything the
+# policy trained on, and L5 sits at the far end of the orbit (180 deg for an asymmetric object,
+# 45 for a C4 cube), the furthest a yaw can be from the training window.
+#
+# The bands are ONE-SIDED (they walk in the +yaw direction only). A two-sided band -- |dyaw| in
+# [a, b] on both sides -- is not expressible as the single (lo, hi) interval robosuite's
+# UniformRandomSampler takes, and the only symmetric single interval outside a window is the whole
+# outside, which is nested rather than disjoint. Disjointness was the requirement, so the sign is
+# what gives. Worth knowing when reading these: this project has already measured an asymmetry
+# between the two yaw halves (the clean-frame probe found the negative half both rarer in the
+# training data and worse at test), so an L5 number is "180 deg away on the + side", not an average
+# over both directions. A symmetric version needs a custom sampler, not a different window.
+POS_LADDER_SCALES = (1.2, 1.4, 1.6, 1.8, 2.0)
+YAW_LADDER_LEVELS = 5
+
+
+def yaw_band_range(lo, hi, band, n_bands=YAW_LADDER_LEVELS, fold=1):
+    """The `band`-th of `n_bands` disjoint yaw windows walking outward from the ID window (lo, hi).
+
+    The region available to walk into runs from the ID window's edge to the far side of the
+    object's orientation orbit -- pi for an asymmetric object, pi/fold for one with N-fold symmetry
+    about z, since yaw and yaw + 2pi/fold are then the same physical scene and anything past the
+    half-orbit is closer to the ID window again, not further. Splitting that region evenly makes
+    band `n_bands` end exactly at the far point.
+    """
+    center = (lo + hi) / 2.0
+    half = (hi - lo) / 2.0
+    far = np.pi / fold
+    step = (far - half) / n_bands
+    return (center + half + (band - 1) * step, center + half + band * step)
+
+
+class YawBandMixin:
+    """Draws yaw from one disjoint band instead of a widened window; x/y stay at ID.
+
+    Sits in front of a task's `_OOD_BOTH` class with both widen flags off, so the inherited
+    `_get_initial_placement_bounds()` hands back exactly the ID spec for every object -- targets
+    included, since OODPlacementMixin exempts those -- and this replaces the z_rot of the primaries
+    only. An object whose z_rot is a single fixed point upstream (coffee_d2's pod) has no axis to
+    walk away from and keeps it, exactly as the plain _OOD_YAW rung does.
+    """
+
+    yaw_band = 1
+    yaw_n_bands = YAW_LADDER_LEVELS
+    widen_xy = False    # the position axis is held at ID for the whole rotation ladder
+    widen_yaw = False   # the band REPLACES the widened window; it does not widen on top of it
+
+    def _get_initial_placement_bounds(self):
+        base = super()._get_initial_placement_bounds()
+        out = {}
+        for name, spec in base.items():
+            new_spec = dict(spec)
+            if name not in getattr(self, "target_objects", ()) and "z_rot" in spec:
+                lo, hi = spec["z_rot"]
+                if hi - lo > EPS:
+                    new_spec["z_rot"] = yaw_band_range(
+                        lo, hi, self.yaw_band, self.yaw_n_bands, getattr(self, "yaw_fold", 1))
+            out[name] = new_spec
+        return out
+
+
+class PickPlaceYawBandMixin:
+    """The same band, applied where pick_place actually keeps its ranges.
+
+    pick_place builds its sampler from bin geometry rather than from the bounds dict, so the
+    dict-rewriting mixin above would be a no-op here. `widen_yaw = False` turns off the parent's
+    180 degree widening and the band is written onto the sampler in its place.
+    """
+
+    yaw_band = 1
+    yaw_n_bands = YAW_LADDER_LEVELS
+    widen_xy = False
+    widen_yaw = False
+
+    def _get_placement_initializer(self):
+        super()._get_placement_initializer()
+        sampler = self.placement_initializer.samplers["CollisionObjectSampler"]
+        if isinstance(sampler.rotation, (tuple, list)):
+            lo, hi = sampler.rotation
+            sampler.rotation = yaw_band_range(lo, hi, self.yaw_band, self.yaw_n_bands)
+
+
+def _make_graded_variants(both_cls):
+    """Derive the ten graded envs from a task's _OOD_BOTH class, as _make_axis_variants does.
+
+    Everything task-specific -- target_objects, the pinned peg, the per-cube sampler, the yaw fold,
+    pick_place's bin handling -- already lives in that class, so the levels inherit it rather than
+    restating it twelve times over.
+    """
+    stem = both_cls.__name__[: -len("_OOD_BOTH")]
+    is_pick_place = issubclass(both_cls, PickPlace_D0)
+    made = []
+    for level, scale in enumerate(POS_LADDER_SCALES, start=1):
+        made.append(type(
+            f"{stem}_OOD_POS_L{level}", (both_cls,),
+            dict(__doc__=f"Position ladder level {level}/{len(POS_LADDER_SCALES)} for {stem}: "
+                         f"x/y half-width x {scale} about the ID center, yaw held at ID.",
+                 ood_scale=scale, widen_xy=True, widen_yaw=False)))
+    band_mixin = PickPlaceYawBandMixin if is_pick_place else YawBandMixin
+    for level in range(1, YAW_LADDER_LEVELS + 1):
+        made.append(type(
+            f"{stem}_OOD_YAW_L{level}", (band_mixin, both_cls),
+            dict(__doc__=f"Rotation ladder level {level}/{YAW_LADDER_LEVELS} for {stem}: yaw from "
+                         f"band {level} outward from the ID window, x/y held at ID.",
+                 yaw_band=level)))
+    return made
+
+
+for _both in _BOTH_CLASSES:
+    for _cls in _make_graded_variants(_both):
+        globals()[_cls.__name__] = _cls
+
+
+# task -> the ten graded evaluation envs, position ladder first
+TASK_GRADED_LADDER = {
+    task: (tuple(f"{stem}_OOD_POS_L{i}" for i in range(1, len(POS_LADDER_SCALES) + 1))
+           + tuple(f"{stem}_OOD_YAW_L{i}" for i in range(1, YAW_LADDER_LEVELS + 1)))
+    for task, (id_env, _pos, _yaw, both) in TASK_LADDER.items()
+    for stem in (both[: -len("_OOD_BOTH")],)
+}
+
+# Degenerate levels, for the same reason their single-point counterparts are degenerate. Reporting
+# either as OOD is what put nine wrong cells in the paper's first table, so they are named here
+# rather than left to be rediscovered:
+#   coffee_d2      every _OOD_YAW_L* == ID -- the pod is a body of revolution with a fixed yaw
+#   pick_place_d0  every _OOD_POS_L* == ID -- its x/y range is the bin interior and is not widened
+GRADED_DEGENERATE = {
+    "coffee_d2": tuple(f"Coffee_D2_OOD_YAW_L{i}" for i in range(1, YAW_LADDER_LEVELS + 1)),
+    "pick_place_d0": tuple(f"PickPlace_D0_OOD_POS_L{i}"
+                           for i in range(1, len(POS_LADDER_SCALES) + 1)),
+}

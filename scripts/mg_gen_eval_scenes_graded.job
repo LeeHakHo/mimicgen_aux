@@ -1,0 +1,74 @@
+#!/bin/bash
+#SBATCH --account=gaurav_1048
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
+#SBATCH --constraint=a100|a40|l40s|v100|p100
+#SBATCH --mem=24G
+#SBATCH --time=04:00:00
+#SBATCH --job-name=mg_scenes_graded
+#SBATCH --array=0-11
+
+# Fixed evaluation scenes for the GRADED ladder: ten sets per task, twenty scenes each.
+#
+#   pos_l1 .. pos_l5   x/y half-width x 1.2 1.4 1.6 1.8 2.0 about the ID center, yaw held at ID
+#   yaw_l1 .. yaw_l5   x/y held at ID, yaw from the k-th of five disjoint bands walking outward
+#                      from the ID window to the far side of the object's orientation orbit
+#
+# 20 per level, matching the existing rungs: the measured between-seed std is 2-3 points, so a
+# level whose success rate moves one scene (5 points) is still readable, where the 10-point step of
+# a 10-scene level would not be. Ten levels x 20 = 200 scenes per task, against the 120 the
+# id/ood_pos/ood_yaw/ood_both sets hold.
+#
+# Writes alongside the existing sets in the same per-task directory, under distinct names, so the
+# rung eval and the ladder eval read from one place and neither can overwrite the other. Each set
+# is skipped if it already exists, so a timed-out array element resumes where it stopped.
+#
+# The scenes depend only on the env, not on the policy, so this can run while training does.
+set -u
+source /etc/profile.d/modules.sh; module purge; module load gcc/12.3.0
+source /scratch1/hyeonhoo/miniconda3/etc/profile.d/conda.sh; conda activate robot_mimic_mg
+export MUJOCO_GL=egl; export TMPDIR=/scratch1/hyeonhoo/tmp; mkdir -p "$TMPDIR"
+export PYTHONUNBUFFERED=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+cd /scratch1/hyeonhoo/code/Robomimic_Async
+
+TASKS=(stack_d1 stack_three_d1 square_d2 threading_d0 three_piece_assembly_d0 hammer_cleanup_d1 \
+       mug_cleanup_d1 coffee_d2 kitchen_d1 pick_place_d0 coffee_preparation_d1 nut_assembly_d0)
+T=${TASKS[$SLURM_ARRAY_TASK_ID]}
+N_LEVEL=${N_LEVEL:-20}
+SEED=${SEED:-0}
+
+DS=/scratch1/hyeonhoo/results/mg_${T}_id90/${T}_id90/demo.hdf5
+OUT=/scratch1/hyeonhoo/results/id90_eval_scenes/${T}
+mkdir -p "$OUT"
+[ -f "$DS" ] || { echo "FATAL: dataset missing: $DS (datagen not finished for $T)" >&2; exit 1; }
+
+# The ten env names come from the ladder itself rather than being spelled out here, so a rename
+# upstream cannot silently point this job at the wrong distribution.
+ENVS=$(python - "$T" <<'PY'
+import sys
+from mimicgen.envs.robosuite.ood_ladder import TASK_GRADED_LADDER
+print(" ".join(TASK_GRADED_LADDER[sys.argv[1]]))
+PY
+)
+echo "=== node: $(hostname) | $T | $N_LEVEL scenes each ==="
+echo "    envs: $ENVS"
+
+rc_all=0
+for env in $ENVS; do
+    # Stack_D1_OOD_POS_L3 -> pos_l3
+    tag=$(echo "$env" | sed -E 's/.*_OOD_(POS|YAW)_L([0-9]+)$/\L\1_l\2/')
+    out=$OUT/scenes_${tag}.hdf5
+    if [ -f "$out" ]; then echo "=== $tag: exists, reusing $out ==="; continue; fi
+    echo "=== $tag: $N_LEVEL scenes on $env ==="
+    python -m robomimic.scripts.generate_eval_scenes \
+        --dataset "$DS" --env "$env" --n_scenes "$N_LEVEL" --seed "$SEED" --output "$out"
+    rc=$?; echo "=== $tag EXIT: $rc ==="
+    [ $rc -ne 0 ] && rc_all=$rc
+done
+
+ls -la "$OUT"
+echo "=== GRADED SCENES DONE: $T (exit $rc_all) ==="
+exit $rc_all

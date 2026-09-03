@@ -35,10 +35,13 @@ TASKS = {
     # hammer does NOT use the generic D1-based ID90 env. HammerCleanup_Yaw45_Spawn12 is the
     # distribution that produced this project's only above-noise baseline-vs-aux gap (0.57 ->
     # 0.77 on OOD20), and it is already an ID90-shaped window: drawer pinned to its D0 pose,
-    # hammer yaw +-45 deg (a 90 deg window) and xy at 1.2x the narrow D0 box. The generic
+    # hammer yaw +-45 deg with the head PINNED and xy at 2.5x the narrow D0 box. Yaw45_Spawn12's
+    # window was really two lobes 180 deg apart (init_quat is a coin flip), and its 0.0080 m2
+    # spawn was 27x smaller in area than square_d2's, which left the task with almost no position
+    # axis and made it the easiest of the twelve. The generic
     # HammerCleanup_D1_ID90 keeps D1's wide spawn (x 0.400 vs 0.096) and a moving drawer, which
     # dropped datagen success to 4% in the smoke run against ~32% here.
-    "hammer_cleanup_d1":       ("hammer_cleanup",       "MG_HammerCleanup",      "HammerCleanup_Yaw45_Spawn12"),
+    "hammer_cleanup_d1":       ("hammer_cleanup",       "MG_HammerCleanup",      "HammerCleanup_FixedHead_Yaw45_Spawn25"),
     "mug_cleanup_d1":          ("mug_cleanup",          "MG_MugCleanup",         "MugCleanup_D1_ID90"),
     "coffee_d2":               ("coffee",               "MG_Coffee",             "Coffee_D2_ID90"),
     "kitchen_d1":              ("kitchen",              "MG_Kitchen",            "Kitchen_D1_ID90"),

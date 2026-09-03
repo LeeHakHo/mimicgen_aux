@@ -497,7 +497,45 @@ class HammerCleanup_D1_FixedDrawer(HammerCleanup_D1):
         return bounds
 
 
-class HammerCleanup_YawBand(HammerCleanup_D1_FixedDrawer):
+class FixedHeadHammerObject(HammerObject):
+    """HammerObject whose head always faces the same way.
+
+    Upstream's `init_quat` is a PROPERTY that flips a coin on every access:
+
+        return np.array([0.5,-0.5,0.5,-0.5]) if np.random.rand() >= 0.5 else np.array([-0.5]*4)
+
+    so the head direction is drawn independently of the yaw window, and drawn AGAIN every time the
+    attribute is read -- `_get_initial_placement_bounds()` stores one draw while `sample()` uses
+    another. Measured in the 200 training demos of HammerCleanup_Yaw45_Spawn12: the hammer is
+    perfectly flat at t=0 (body y-axis . world z = 1.000, min = max), and its in-plane heading is
+    BIMODAL, 121 episodes in one lobe and 79 in the lobe 180 degrees away, which folds to a single
+    clean 89.3 degree window. In other words the declared +-45 degree window is really two 90
+    degree lobes on opposite sides of the circle, and which lobe an episode lands in is noise the
+    policy cannot predict and the aux rotation target cannot be a function of the image across.
+
+    Pinning it makes the orientation orbit a real 360 degrees again, so a +-45 degree window means
+    +-45 degrees. NOTE that this HALVES the orientation variety the policy sees (two 90 degree
+    lobes -> one), so a yaw window widened to compensate is what keeps the task as hard as it was.
+    """
+
+    @property
+    def init_quat(self):
+        return np.array([0.5, -0.5, 0.5, -0.5])
+
+
+class FixedHeadMixin:
+    """Gives a HammerCleanup env the deterministic-head hammer."""
+
+    def _get_sorting_object(self):
+        return FixedHeadHammerObject(
+            name="hammer",
+            handle_length=(0.045, 0.05),
+            handle_radius=(0.012, 0.012),
+            head_density_ratio=1.0,
+        )
+
+
+class HammerCleanup_YawBand(FixedHeadMixin, HammerCleanup_D1_FixedDrawer):
     """
     Base for the yaw-only difficulty ladder. Inherits D1's hammer rotation MECHANISM
     (rotation_axis='y' about the hammer init_quat, which produces true table-plane yaw --
@@ -538,6 +576,51 @@ class HammerCleanup_Yaw45_Spawn12(HammerCleanup_YawBand):
         bounds = super()._get_initial_placement_bounds()  # narrow D0 spawn + +-45 deg yaw band
         bounds["hammer"]["x"] = (0.092, 0.188)      # 1.2x D0 half-width about center 0.14
         bounds["hammer"]["y"] = (-0.207, -0.123)    # 1.2x D0 half-width about center -0.165
+        return bounds
+
+
+class HammerCleanup_FixedHead_Yaw45_Spawn25(HammerCleanup_YawBand):
+    """TRAINING distribution for the 12-task ID90 study, replacing Yaw45_Spawn12.
+
+    Three measurements drove it, all taken on Yaw45_Spawn12's own 200 demos and evaluations:
+
+    1. The head flip made the yaw window a lie. `init_quat` is a coin flip, so the declared +-45
+       degree band was really two 90 degree lobes 180 degrees apart (121 / 79 episodes), and which
+       lobe an episode landed in was unpredictable noise. FixedHeadMixin pins it, which turns the
+       orientation orbit back into a real 360 degrees.
+
+       The band STAYS at +-45. Widening it to +-90 to preserve the old two-lobe coverage was the
+       first instinct and it is wrong twice over. The ladder gives every task an ID window that is
+       a QUARTER of its orientation orbit and an OOD window that is a half, so a 180 degree ID
+       window makes hammer the one task trained on OOD-width rotation -- which is part of why it
+       was the easiest of the twelve. And mechanically it breaks the rung: OODPlacementMixin builds
+       its windows from ID_ROT_HALF_WIDTH, so a 180 degree ID window comes back NARROWED to 90 on
+       the position rung and unchanged at 180 on the rotation rung, i.e. _OOD_YAW would equal ID.
+       That was measured, not predicted -- mg_verify_sampler_ranges.py printed
+       `OOD_POS yaw 89.0/90` and `OOD_YAW yaw 179.1/180` against an ID window of 178.4/180.
+
+    2. This was the easiest of the twelve tasks by a wide margin: baseline in-distribution 0.856
+       against square_d2's 0.533 and stack_d1's 0.733, and 0.72 mean over the training rollouts
+       where the next task was 0.62.
+
+    3. The reason is that it had almost no position axis. Measured spawn extent at t=0 was
+       0.095 x 0.084 m = 0.0080 m2, against square_d2's 0.443 x 0.498 = 0.221 -- twenty-seven times
+       smaller -- while position is the axis this project has repeatedly found policies actually
+       fail on. The spawn is widened to 2.5x the D0 half-width (0.20 x 0.175 m = 0.035 m2, about
+       2.3x threading_d0's), which is a real position axis while staying well inside the 0.8 m
+       table and far from the pinned drawer at (0.2, 0.30).
+
+    Deliberately NOT changed: the drawer stays pinned at its D0 pose. Un-pinning it is what makes
+    D1 hard, but it also moves the place target, and separating "carry to a moving target" from
+    "grasp a rotated object" is the entire point of the single-factor ladder.
+    """
+
+    YAW_HALF = np.pi / 4.0                      # +-45 deg: a quarter orbit, as every task gets
+
+    def _get_initial_placement_bounds(self):
+        bounds = super()._get_initial_placement_bounds()  # narrow D0 spawn + YAW_HALF band
+        bounds["hammer"]["x"] = (0.04, 0.24)        # 2.5x D0 half-width about center 0.14
+        bounds["hammer"]["y"] = (-0.2525, -0.0775)  # 2.5x D0 half-width about center -0.165
         return bounds
 
 
